@@ -1,6 +1,6 @@
 /*
-  ESP32-S3 Multi-Sensor Audio Streaming to WebSocket Server
-  FIXED VERSION - Stable Connection Management
+  ESP32-S3 Stable WebSocket Connection with Audio Streaming
+  Fixed Version - Optimized Connection Management
 */
 
 #include <Arduino.h>
@@ -33,22 +33,24 @@ WebsocketsClient client;
 bool isWebSocketConnected = false;
 bool isAudioStreaming = false;
 
-// FIXED: Proper timing configuration
+// Connection timing
 unsigned long lastSensorRead = 0;
 unsigned long lastStatusSend = 0;
 unsigned long lastPingReceived = 0;
 unsigned long lastPingSent = 0;
+unsigned long lastConnectionAttempt = 0;
 
+// Optimized timing intervals
 const unsigned long sensorReadInterval = 5000;  // 5 seconds
 const unsigned long statusSendInterval = 15000; // 15 seconds
-const unsigned long pingInterval = 35000;       // Send ping every 35 seconds (INCREASED)
-const unsigned long pingTimeout = 45000;        // 45 seconds timeout (REDUCED from 65s)
+const unsigned long pingInterval = 30000;       // Send ping every 30 seconds
+const unsigned long pingTimeout = 45000;        // 45 seconds timeout
 
 // Connection management
 unsigned long lastReconnectAttempt = 0;
-const unsigned long reconnectInterval = 5000;
+const unsigned long reconnectInterval = 5000; // 5 seconds between attempts
 int reconnectAttempts = 0;
-const int maxReconnectAttempts = 10; // Increased attempts
+const int maxReconnectAttempts = 15; // Increased max attempts
 
 // Connection state tracking
 bool connectionEstablished = false;
@@ -79,8 +81,9 @@ void onEventsCallback(WebsocketsEvent event, String data)
     reconnectAttempts = 0;
     lastPingReceived = millis();
     lastPingSent = millis();
+    lastConnectionAttempt = millis();
 
-    // Send device info immediately
+    // Send device info after short delay
     delay(500);
     sendDeviceInfo();
     break;
@@ -96,7 +99,6 @@ void onEventsCallback(WebsocketsEvent event, String data)
   case WebsocketsEvent::GotPing:
     Serial.println("📡 Got Ping from server - auto pong sent");
     lastPingReceived = millis();
-    // WebSocket library automatically sends pong - no manual action needed
     break;
 
   case WebsocketsEvent::GotPong:
@@ -106,7 +108,6 @@ void onEventsCallback(WebsocketsEvent event, String data)
   }
 }
 
-// 4. Enhanced message callback to handle ping properly
 void onMessageCallback(WebsocketsMessage message)
 {
   Serial.print("📨 Got Message: ");
@@ -163,10 +164,10 @@ void onMessageCallback(WebsocketsMessage message)
   else if (messageType == "pong")
   {
     Serial.println("📡 Received pong from server");
-    // Update last ping received time
     lastPingReceived = millis();
   }
 }
+
 void setupI2S()
 {
   const i2s_config_t i2s_config = {
@@ -256,6 +257,12 @@ bool connectWebSocket()
   client.onEvent(onEventsCallback);
   client.onMessage(onMessageCallback);
 
+  // Remove setReconnectInterval() as it's not available in this version
+  // client.setReconnectInterval(0); // Remove this line
+
+  // For SSL connections, you would use:
+  // client.setInsecure(); // Only if your server doesn't use SSL
+
   bool connected = client.connect(websocket_server_host, websocket_server_port, websocket_path);
 
   if (connected)
@@ -263,6 +270,7 @@ bool connectWebSocket()
     Serial.println("✓ WebSocket Connected!");
     lastPingReceived = millis();
     lastPingSent = millis();
+    lastConnectionAttempt = millis();
     return true;
   }
   else
@@ -280,12 +288,13 @@ void sendDeviceInfo()
   JsonDocument doc;
   doc["type"] = "device-info";
   doc["deviceName"] = "ESP32-Audio-Sensor";
-  doc["firmwareVersion"] = "1.0.1";
+  doc["firmwareVersion"] = "1.0.2";
 
-  JsonArray capabilities = doc.createNestedArray("capabilities");
+  // Updated way to create nested arrays
+  JsonArray capabilities = doc["capabilities"].to<JsonArray>();
   capabilities.add("audio");
 
-  JsonArray sensorTypes = doc.createNestedArray("sensorTypes");
+  JsonArray sensorTypes = doc["sensorTypes"].to<JsonArray>();
   sensorTypes.add("audio");
 
   doc["batteryLevel"] = 85;
@@ -306,6 +315,31 @@ void sendDeviceInfo()
   }
 }
 
+void sendSensorData()
+{
+  if (!isWebSocketConnected || !connectionEstablished)
+    return;
+
+  JsonDocument doc;
+  doc["type"] = "sensor-data";
+  doc["sensorType"] = "system";
+  doc["timestamp"] = millis();
+
+  // Updated way to create nested objects
+  JsonObject data = doc["data"].to<JsonObject>();
+  data["freeHeap"] = ESP.getFreeHeap();
+  data["rssi"] = WiFi.RSSI();
+  data["uptime"] = millis();
+  data["audioStreaming"] = isAudioStreaming;
+
+  String message;
+  serializeJson(doc, message);
+
+  if (client.send(message))
+  {
+    Serial.println("📊 Sensor data sent");
+  }
+}
 void sendStatusUpdate()
 {
   if (!isWebSocketConnected || !connectionEstablished)
@@ -369,31 +403,6 @@ void stopAudioStreaming()
   }
 }
 
-void sendSensorData()
-{
-  if (!isWebSocketConnected || !connectionEstablished)
-    return;
-
-  JsonDocument doc;
-  doc["type"] = "sensor-data";
-  doc["sensorType"] = "system";
-  doc["timestamp"] = millis();
-
-  JsonObject data = doc.createNestedObject("data");
-  data["freeHeap"] = ESP.getFreeHeap();
-  data["rssi"] = WiFi.RSSI();
-  data["uptime"] = millis();
-  data["audioStreaming"] = isAudioStreaming;
-
-  String message;
-  serializeJson(doc, message);
-
-  if (client.send(message))
-  {
-    Serial.println("📊 Sensor data sent");
-  }
-}
-
 void restartSystem(const char *reason)
 {
   Serial.printf("🔄 RESTARTING SYSTEM: %s\n", reason);
@@ -432,21 +441,6 @@ void micTask(void *parameter)
       {
         client.sendBinary((const char *)sBuffer, bytesIn);
         consecutiveErrors = 0;
-
-        // Optional: Audio level monitoring (reduced frequency)
-        static int sampleCount = 0;
-        if (sampleCount++ % 500 == 0)
-        {
-          int16_t maxSample = 0;
-          for (int i = 0; i < bytesIn / sizeof(int16_t); i++)
-          {
-            if (abs(sBuffer[i]) > maxSample)
-            {
-              maxSample = abs(sBuffer[i]);
-            }
-          }
-          Serial.printf("🔊 Audio level: %d, Bytes: %d\n", maxSample, bytesIn);
-        }
       }
       else
       {
@@ -491,16 +485,13 @@ void sensorTask(void *parameter)
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("🚀 ESP32 Multi-Sensor Audio Streaming Client Starting...");
+  Serial.println("🚀 ESP32 Stable WebSocket Audio Streaming Client Starting...");
 
   connectWiFi();
   setupI2S();
 
   if (connectWebSocket())
   {
-    // Wait for connection to stabilize
-    delay(2000);
-
     // Start microphone task on core 1
     xTaskCreatePinnedToCore(
         micTask,
@@ -527,6 +518,7 @@ void setup()
     restartSystem("Initial WebSocket Connection Failed");
   }
 }
+
 void loop()
 {
   unsigned long now = millis();
@@ -536,30 +528,16 @@ void loop()
     // Poll WebSocket for messages
     client.poll();
 
-    // Send periodic ping - LESS FREQUENTLY
-    if (now - lastPingSent >= pingInterval)
-    {
-      sendPing();
-    }
-
     // Send periodic status updates
     if (now - lastStatusSend >= statusSendInterval && connectionEstablished)
     {
       lastStatusSend = now;
       sendStatusUpdate();
     }
-
-    // Check for ping timeout - MORE LENIENT
-    if (now - lastPingReceived > pingTimeout)
-    {
-      Serial.printf("⚠️ Ping timeout - no response for %lu ms\n", now - lastPingReceived);
-      isWebSocketConnected = false;
-      client.close();
-    }
   }
   else
   {
-    // Reconnection logic - SAME AS BEFORE
+    // Reconnection logic
     if (now - lastReconnectAttempt > reconnectInterval && reconnectAttempts < maxReconnectAttempts)
     {
       lastReconnectAttempt = now;
