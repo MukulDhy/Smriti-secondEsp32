@@ -1,6 +1,6 @@
 /*
-  ESP32-S3 Stable WebSocket Connection with Audio Streaming
-  Fixed Version - Optimized Connection Management
+  ESP32-S3 WebSocket Connection - Alternative Non-SSL Version
+  Use this if SSL connections are problematic
 */
 
 #include <Arduino.h>
@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <ArduinoWebsockets.h>
 #include <ArduinoJson.h>
+#include <HTTPClient.h>
 
 using namespace websockets;
 
@@ -25,9 +26,10 @@ int16_t sBuffer[BUFFER_LEN];
 const char *ssid = "Mukuldhy";
 const char *password = "12345678";
 
-const char *websocket_server_host = "192.168.0.103";
-const uint16_t websocket_server_port = 5000;
-const char *websocket_path = "/esp32";
+// Try WS (non-secure) first - many render.com apps support both
+const char *websocket_server_url = "ws://simiriti-backend.onrender.com/esp32";
+// Backup SSL URL if needed
+const char *websocket_server_url_ssl = "wss://simiriti-backend.onrender.com/esp32";
 
 WebsocketsClient client;
 bool isWebSocketConnected = false;
@@ -41,16 +43,16 @@ unsigned long lastPingSent = 0;
 unsigned long lastConnectionAttempt = 0;
 
 // Optimized timing intervals
-const unsigned long sensorReadInterval = 5000;  // 5 seconds
-const unsigned long statusSendInterval = 15000; // 15 seconds
-const unsigned long pingInterval = 30000;       // Send ping every 30 seconds
-const unsigned long pingTimeout = 45000;        // 45 seconds timeout
+const unsigned long sensorReadInterval = 10000;  // 10 seconds (increased)
+const unsigned long statusSendInterval = 30000; // 30 seconds (increased)
+const unsigned long pingInterval = 45000;       // Send ping every 45 seconds
+const unsigned long pingTimeout = 120000;       // 2 minutes timeout
 
 // Connection management
 unsigned long lastReconnectAttempt = 0;
-const unsigned long reconnectInterval = 5000; // 5 seconds between attempts
+const unsigned long reconnectInterval = 20000; // 20 seconds between attempts
 int reconnectAttempts = 0;
-const int maxReconnectAttempts = 15; // Increased max attempts
+const int maxReconnectAttempts = 3;
 
 // Connection state tracking
 bool connectionEstablished = false;
@@ -68,6 +70,7 @@ void stopAudioStreaming();
 void sendSensorData();
 void sendPing();
 void restartSystem(const char *reason);
+bool testInternetConnection();
 
 void onEventsCallback(WebsocketsEvent event, String data)
 {
@@ -84,7 +87,7 @@ void onEventsCallback(WebsocketsEvent event, String data)
     lastConnectionAttempt = millis();
 
     // Send device info after short delay
-    delay(500);
+    delay(3000); // Increased delay for slower connections
     sendDeviceInfo();
     break;
 
@@ -220,17 +223,58 @@ void setupI2S()
   Serial.println("✓ I2S initialized successfully");
 }
 
+bool testInternetConnection() {
+  HTTPClient http;
+  http.begin("http://httpbin.org/ip"); // Simple HTTP test
+  http.setTimeout(10000); // 10 second timeout
+  
+  int httpCode = http.GET();
+  http.end();
+  
+  if (httpCode > 0) {
+    Serial.printf("✓ Internet connection test passed (HTTP %d)\n", httpCode);
+    return true;
+  } else {
+    Serial.printf("❌ Internet connection test failed (Error: %d)\n", httpCode);
+    return false;
+  }
+}
+
 void connectWiFi()
 {
   Serial.println("🔄 Connecting to WiFi...");
+  
+  // Complete WiFi reset
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(1000);
+  
+  // Configure WiFi
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoConnect(true);
+  WiFi.setAutoReconnect(true);
+  
+  // Multiple DNS servers for redundancy
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, 
+              IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
+  
   WiFi.begin(ssid, password);
 
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20)
+  while (WiFi.status() != WL_CONNECTED && attempts < 50)
   {
     delay(500);
     Serial.print(".");
     attempts++;
+    
+    // Try reconnecting every 10 attempts
+    if (attempts % 10 == 0) {
+      Serial.println();
+      Serial.printf("🔄 WiFi attempt %d/50\n", attempts);
+      WiFi.disconnect();
+      delay(1000);
+      WiFi.begin(ssid, password);
+    }
   }
 
   if (WiFi.status() == WL_CONNECTED)
@@ -238,6 +282,37 @@ void connectWiFi()
     Serial.println("\n✓ WiFi connected!");
     Serial.print("📍 IP Address: ");
     Serial.println(WiFi.localIP());
+    Serial.print("📶 Signal Strength: ");
+    Serial.println(WiFi.RSSI());
+    Serial.print("🌐 Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("🔍 DNS: ");
+    Serial.println(WiFi.dnsIP());
+    
+    // Test internet connectivity
+    delay(2000);
+    if (!testInternetConnection()) {
+      Serial.println("⚠️ Internet connection issues detected");
+    }
+    
+    // Test DNS resolution
+    Serial.println("🔍 Testing DNS resolution...");
+    IPAddress serverIP;
+    if (WiFi.hostByName("simiriti-backend.onrender.com", serverIP)) {
+      Serial.print("✓ DNS resolved: ");
+      Serial.println(serverIP);
+    } else {
+      Serial.println("❌ DNS resolution failed - trying alternative DNS");
+      WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, 
+                  IPAddress(1, 1, 1, 1), IPAddress(8, 8, 4, 4));
+      delay(2000);
+      if (WiFi.hostByName("simiriti-backend.onrender.com", serverIP)) {
+        Serial.print("✓ DNS resolved with alternative DNS: ");
+        Serial.println(serverIP);
+      } else {
+        Serial.println("❌ DNS still failing");
+      }
+    }
   }
   else
   {
@@ -250,24 +325,76 @@ bool connectWebSocket()
 {
   if (WiFi.status() != WL_CONNECTED)
   {
+    Serial.println("❌ WiFi not connected");
     return false;
   }
 
   Serial.println("🔄 Connecting to WebSocket server...");
+  
+  // Clean up existing connection
+  if (isWebSocketConnected) {
+    client.close();
+    delay(3000);
+  }
+  
+  // Test DNS resolution first
+  IPAddress serverIP;
+  if (!WiFi.hostByName("simiriti-backend.onrender.com", serverIP)) {
+    Serial.println("❌ Cannot resolve server hostname");
+    return false;
+  }
+  Serial.print("✓ Server IP resolved: ");
+  Serial.println(serverIP);
+  
   client.onEvent(onEventsCallback);
   client.onMessage(onMessageCallback);
+  
+  bool connected = false;
+  
+  // Try multiple connection methods
+  for (int attempt = 1; attempt <= 4; attempt++) {
+    Serial.printf("🔄 Connection attempt %d/4\n", attempt);
+    
+    switch(attempt) {
+      case 1:
+        // Method 1: Direct WS connection (non-secure)
+        Serial.println("Trying: WS (non-secure) connection");
+        connected = client.connect(websocket_server_url);
+        break;
+        
+      case 2:
+        // Method 2: WSS connection
+        Serial.println("Trying: WSS (secure) connection");
+        connected = client.connect(websocket_server_url_ssl);
+        break;
+        
+      case 3:
+        // Method 3: Connect using IP address with WS
+        {
+          String ipWsUrl = "ws://" + serverIP.toString() + "/esp32";
+          Serial.printf("Trying: IP-based WS connection (%s)\n", ipWsUrl.c_str());
+          connected = client.connect(ipWsUrl);
+        }
+        break;
+        
+      case 4:
+        // Method 4: Explicit host and port
+        Serial.println("Trying: Explicit host/port connection");
+        connected = client.connect("simiriti-backend.onrender.com", 80, "/esp32");
+        break;
+    }
 
-  // Remove setReconnectInterval() as it's not available in this version
-  // client.setReconnectInterval(0); // Remove this line
-
-  // For SSL connections, you would use:
-  // client.setInsecure(); // Only if your server doesn't use SSL
-
-  bool connected = client.connect(websocket_server_host, websocket_server_port, websocket_path);
+    if (connected) {
+      Serial.printf("✓ WebSocket Connected using method %d!\n", attempt);
+      break;
+    } else {
+      Serial.printf("❌ Method %d failed, waiting before retry...\n", attempt);
+      delay(5000);
+    }
+  }
 
   if (connected)
   {
-    Serial.println("✓ WebSocket Connected!");
     lastPingReceived = millis();
     lastPingSent = millis();
     lastConnectionAttempt = millis();
@@ -275,7 +402,7 @@ bool connectWebSocket()
   }
   else
   {
-    Serial.println("❌ WebSocket connection failed");
+    Serial.println("❌ All WebSocket connection methods failed");
     return false;
   }
 }
@@ -288,18 +415,23 @@ void sendDeviceInfo()
   JsonDocument doc;
   doc["type"] = "device-info";
   doc["deviceName"] = "ESP32-Audio-Sensor";
-  doc["firmwareVersion"] = "1.0.2";
+  doc["firmwareVersion"] = "1.0.5";
+  doc["deviceId"] = "ESP32-" + String(ESP.getEfuseMac(), HEX);
 
-  // Updated way to create nested arrays
   JsonArray capabilities = doc["capabilities"].to<JsonArray>();
   capabilities.add("audio");
+  capabilities.add("sensors");
 
   JsonArray sensorTypes = doc["sensorTypes"].to<JsonArray>();
   sensorTypes.add("audio");
+  sensorTypes.add("system");
 
   doc["batteryLevel"] = 85;
   doc["signalStrength"] = WiFi.RSSI();
   doc["timestamp"] = millis();
+  doc["freeHeap"] = ESP.getFreeHeap();
+  doc["chipModel"] = ESP.getChipModel();
+  doc["macAddress"] = WiFi.macAddress();
 
   String message;
   serializeJson(doc, message);
@@ -324,13 +456,15 @@ void sendSensorData()
   doc["type"] = "sensor-data";
   doc["sensorType"] = "system";
   doc["timestamp"] = millis();
+  doc["deviceId"] = "ESP32-" + String(ESP.getEfuseMac(), HEX);
 
-  // Updated way to create nested objects
   JsonObject data = doc["data"].to<JsonObject>();
   data["freeHeap"] = ESP.getFreeHeap();
   data["rssi"] = WiFi.RSSI();
   data["uptime"] = millis();
   data["audioStreaming"] = isAudioStreaming;
+  data["wifiStatus"] = WiFi.status();
+  data["temperature"] = temperatureRead();
 
   String message;
   serializeJson(doc, message);
@@ -340,6 +474,7 @@ void sendSensorData()
     Serial.println("📊 Sensor data sent");
   }
 }
+
 void sendStatusUpdate()
 {
   if (!isWebSocketConnected || !connectionEstablished)
@@ -354,6 +489,7 @@ void sendStatusUpdate()
   doc["timestamp"] = millis();
   doc["uptime"] = millis();
   doc["freeHeap"] = ESP.getFreeHeap();
+  doc["deviceId"] = "ESP32-" + String(ESP.getEfuseMac(), HEX);
 
   String message;
   serializeJson(doc, message);
@@ -372,6 +508,7 @@ void sendPing()
   JsonDocument doc;
   doc["type"] = "ping";
   doc["timestamp"] = millis();
+  doc["deviceId"] = "ESP32-" + String(ESP.getEfuseMac(), HEX);
 
   String message;
   serializeJson(doc, message);
@@ -413,11 +550,12 @@ void restartSystem(const char *reason)
     doc["type"] = "system-restart";
     doc["reason"] = reason;
     doc["timestamp"] = millis();
+    doc["deviceId"] = "ESP32-" + String(ESP.getEfuseMac(), HEX);
 
     String message;
     serializeJson(doc, message);
     client.send(message);
-    delay(1000);
+    delay(5000);
   }
 
   ESP.restart();
@@ -429,23 +567,28 @@ void micTask(void *parameter)
 
   size_t bytesIn = 0;
   int consecutiveErrors = 0;
-  const int maxConsecutiveErrors = 50;
+  const int maxConsecutiveErrors = 100; // Increased tolerance
 
   while (true)
   {
     if (isWebSocketConnected && isAudioStreaming && connectionEstablished)
     {
-      esp_err_t result = i2s_read(I2S_PORT, &sBuffer, BUFFER_LEN * sizeof(int16_t), &bytesIn, 100);
+      esp_err_t result = i2s_read(I2S_PORT, &sBuffer, BUFFER_LEN * sizeof(int16_t), &bytesIn, 200);
 
       if (result == ESP_OK && bytesIn > 0)
       {
-        client.sendBinary((const char *)sBuffer, bytesIn);
-        consecutiveErrors = 0;
+        if (isWebSocketConnected && client.available()) {
+          bool sent = client.sendBinary((const char *)sBuffer, bytesIn);
+          if (!sent) {
+            Serial.println("⚠️ Failed to send audio data");
+          }
+          consecutiveErrors = 0;
+        }
       }
       else
       {
         consecutiveErrors++;
-        if (consecutiveErrors % 20 == 0)
+        if (consecutiveErrors % 50 == 0)
         {
           Serial.printf("⚠️ I2S read error: %d, consecutive errors: %d\n", result, consecutiveErrors);
         }
@@ -459,7 +602,7 @@ void micTask(void *parameter)
     }
     else
     {
-      vTaskDelay(100 / portTICK_PERIOD_MS);
+      vTaskDelay(200 / portTICK_PERIOD_MS);
     }
   }
 }
@@ -478,35 +621,41 @@ void sensorTask(void *parameter)
       sendSensorData();
     }
 
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
   }
 }
 
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("🚀 ESP32 Stable WebSocket Audio Streaming Client Starting...");
+  delay(3000);
+  Serial.println("🚀 ESP32 WebSocket Audio Client Starting (Alternative Version)...");
+  
+  Serial.printf("📋 Chip Model: %s\n", ESP.getChipModel());
+  Serial.printf("📋 Chip Revision: %d\n", ESP.getChipRevision());
+  Serial.printf("📋 Free Heap: %d bytes\n", ESP.getFreeHeap());
+  Serial.printf("📋 Flash Size: %d bytes\n", ESP.getFlashChipSize());
 
   connectWiFi();
   setupI2S();
 
+  delay(5000);
+
   if (connectWebSocket())
   {
-    // Start microphone task on core 1
     xTaskCreatePinnedToCore(
         micTask,
         "micTask",
-        10000,
+        12000,
         NULL,
         2,
         &micTaskHandle,
         1);
 
-    // Start sensor task on core 0
     xTaskCreatePinnedToCore(
         sensorTask,
         "sensorTask",
-        8000,
+        10000,
         NULL,
         1,
         &sensorTaskHandle,
@@ -514,11 +663,9 @@ void setup()
   }
   else
   {
-    Serial.println("❌ Failed to connect to WebSocket server - restarting");
-    restartSystem("Initial WebSocket Connection Failed");
+    Serial.println("❌ Failed to connect to WebSocket server - will retry in loop");
   }
 }
-
 void loop()
 {
   unsigned long now = millis();
@@ -533,6 +680,19 @@ void loop()
     {
       lastStatusSend = now;
       sendStatusUpdate();
+    }
+
+    // Send periodic ping
+    if (now - lastPingSent >= pingInterval && connectionEstablished)
+    {
+      sendPing();
+    }
+
+    // Check for ping timeout
+    if (now - lastPingReceived > pingTimeout)
+    {
+      Serial.println("❌ Ping timeout - connection may be lost");
+      isWebSocketConnected = false;
     }
   }
   else
@@ -560,9 +720,9 @@ void loop()
   // Check WiFi connection
   if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("❌ WiFi disconnected - restarting");
-    restartSystem("WiFi Disconnected");
+    Serial.println("❌ WiFi disconnected - attempting reconnection");
+    connectWiFi();
   }
 
-  delay(100);
+  delay(250); // Slightly increased delay for better stability
 }
