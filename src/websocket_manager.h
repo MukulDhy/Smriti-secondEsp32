@@ -24,6 +24,7 @@ private:
     static void onMessageCallback(WebsocketsMessage message);
     static void sendDeviceInfo();
     static void sendPing();
+    static void sendSensorStatus();
 
 public:
     static bool connect();
@@ -35,6 +36,7 @@ public:
     static void sendStatusUpdate();
     static void sendSensorData();
     static void sendBinary(const char *data, size_t length);
+    static void sendText(const String &message);
 };
 
 #endif

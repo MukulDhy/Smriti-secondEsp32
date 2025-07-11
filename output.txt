@@ -1,0 +1,1707 @@
+=== FILE METADATA ===
+File Name: audio_manager.cpp
+Size: 2267 bytes
+Created: Fri Jul 11 22:38:46 2025
+Last Modified: Fri Jul 11 22:43:28 2025
+File Type: .cpp
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\audio_manager.cpp
+
+--- FILE CONTENT START ---
+#include "audio_manager.h"
+#include "config.h"
+#include "websocket_manager.h"
+
+// Static member definitions
+bool AudioManager::isAudioStreaming = false;
+int16_t AudioManager::sBuffer[BUFFER_LEN];
+
+void AudioManager::init()
+{
+  const i2s_config_t i2s_config = {
+      .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_RX),
+      .sample_rate = 16000,
+      .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+      .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+      .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+      .dma_buf_count = BUFFER_COUNT,
+      .dma_buf_len = BUFFER_LEN,
+      .use_apll = false,
+      .tx_desc_auto_clear = false,
+      .fixed_mclk = 0};
+
+  const i2s_pin_config_t pin_config = {
+      .bck_io_num = I2S_SCK,
+      .ws_io_num = I2S_WS,
+      .data_out_num = -1,
+      .data_in_num = I2S_SD};
+
+  esp_err_t result = i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  if (result != ESP_OK)
+  {
+    Serial.printf("❌ I2S install failed: %d\n", result);
+    return;
+  }
+
+  result = i2s_set_pin(I2S_PORT, &pin_config);
+  if (result != ESP_OK)
+  {
+    Serial.printf("❌ I2S pin config failed: %d\n", result);
+    return;
+  }
+
+  result = i2s_set_clk(I2S_PORT, 16000, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+  if (result != ESP_OK)
+  {
+    Serial.printf("❌ I2S clock config failed: %d\n", result);
+    return;
+  }
+
+  result = i2s_start(I2S_PORT);
+  if (result != ESP_OK)
+  {
+    Serial.printf("❌ I2S start failed: %d\n", result);
+    return;
+  }
+
+  Serial.println("✓ I2S initialized successfully");
+}
+
+void AudioManager::startStreaming()
+{
+  if (!isAudioStreaming)
+  {
+    isAudioStreaming = true;
+    Serial.println("🎤 Audio streaming started");
+    WebSocketManager::sendStatusUpdate();
+  }
+}
+
+void AudioManager::stopStreaming()
+{
+  if (isAudioStreaming)
+  {
+    isAudioStreaming = false;
+    Serial.println("🎤 Audio streaming stopped");
+    WebSocketManager::sendStatusUpdate();
+  }
+}
+
+bool AudioManager::isStreaming()
+{
+  return isAudioStreaming;
+}
+
+int16_t* AudioManager::getBuffer()
+{
+  return sBuffer;
+}
+
+size_t AudioManager::getBufferSize()
+{
+  return BUFFER_LEN * sizeof(int16_t);
+}
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: audio_manager.h
+Size: 419 bytes
+Created: Fri Jul 11 22:38:40 2025
+Last Modified: Fri Jul 11 22:49:38 2025
+File Type: .h
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\audio_manager.h
+
+--- FILE CONTENT START ---
+#ifndef AUDIO_MANAGER_H
+#define AUDIO_MANAGER_H
+
+#include <Arduino.h>
+#include <driver/i2s.h>
+
+class AudioManager
+{
+private:
+    static bool isAudioStreaming;
+    static int16_t sBuffer[];
+
+public:
+    static void init();
+    static void startStreaming();
+    static void stopStreaming();
+    static bool isStreaming();
+    static int16_t *getBuffer();
+    static size_t getBufferSize();
+};
+
+#endif
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: config.cpp
+Size: 783 bytes
+Created: Fri Jul 11 22:37:14 2025
+Last Modified: Fri Jul 11 22:37:37 2025
+File Type: .cpp
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\config.cpp
+
+--- FILE CONTENT START ---
+#include "config.h"
+
+// WiFi Configuration
+const char *WIFI_SSID = "Mukuldhy";
+const char *WIFI_PASSWORD = "12345678";
+
+// WebSocket Configuration
+const char *WEBSOCKET_HOST = "192.168.0.103";
+const uint16_t WEBSOCKET_PORT = 5000;
+const char *WEBSOCKET_PATH = "/esp32";
+
+// Timing Configuration
+const unsigned long SENSOR_READ_INTERVAL = 5000;  // 5 seconds
+const unsigned long STATUS_SEND_INTERVAL = 15000; // 15 seconds
+const unsigned long PING_INTERVAL = 30000;        // 30 seconds
+const unsigned long PING_TIMEOUT = 45000;         // 45 seconds
+const unsigned long RECONNECT_INTERVAL = 5000;    // 5 seconds
+const int MAX_RECONNECT_ATTEMPTS = 15;
+
+// Device Information
+const char *DEVICE_NAME = "ESP32-Audio-Sensor";
+const char *FIRMWARE_VERSION = "1.0.2";
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: config.h
+Size: 1341 bytes
+Created: Fri Jul 11 22:36:59 2025
+Last Modified: Fri Jul 11 23:51:30 2025
+File Type: .h
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\config.h
+
+--- FILE CONTENT START ---
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#include <Arduino.h>
+
+// I2S Configuration (INMP441 Microphone)
+#define I2S_SD 13
+#define I2S_SCK 14
+#define I2S_WS 15
+#define I2S_PORT I2S_NUM_0
+#define BUFFER_COUNT 10
+#define BUFFER_LEN 1024
+
+// I2C Configuration for Heart Rate Sensor (MAX30102)
+#define HR_SDA 21
+#define HR_SCL 22
+#define HR_I2C_FREQ 400000
+
+// I2C Configuration for Gyroscope (GY-87)
+#define GYRO_SDA 18
+#define GYRO_SCL 19
+#define GYRO_I2C_FREQ 400000
+
+// Sensor Data Intervals (in milliseconds)
+#define HEART_RATE_INTERVAL 100    // 10 Hz for heart rate
+#define GYROSCOPE_INTERVAL 50      // 20 Hz for gyroscope
+#define AUDIO_SAMPLE_RATE 16000    // 16 kHz for audio
+
+// WiFi Configuration
+extern const char *WIFI_SSID;
+extern const char *WIFI_PASSWORD;
+
+// WebSocket Configuration
+extern const char *WEBSOCKET_HOST;
+extern const uint16_t WEBSOCKET_PORT;
+extern const char *WEBSOCKET_PATH;
+
+// Timing Configuration
+extern const unsigned long SENSOR_READ_INTERVAL;
+extern const unsigned long STATUS_SEND_INTERVAL;
+extern const unsigned long PING_INTERVAL;
+extern const unsigned long PING_TIMEOUT;
+extern const unsigned long RECONNECT_INTERVAL;
+extern const int MAX_RECONNECT_ATTEMPTS;
+
+// Device Information
+extern const char *DEVICE_NAME;
+extern const char *FIRMWARE_VERSION;
+
+#endif
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: main.cpp
+Size: 1572 bytes
+Created: Sat Jun 14 16:27:48 2025
+Last Modified: Sat Jul 12 00:02:11 2025
+File Type: .cpp
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\main.cpp
+
+--- FILE CONTENT START ---
+/*
+  ESP32-S3 Stable WebSocket Connection with Multi-Sensor Support
+  Main Application File
+*/
+
+#include <Arduino.h>
+#include "config.h"
+#include "wifi_manager.h"
+#include "websocket_manager.h"
+#include "sensor_manager.h"
+#include "task_manager.h"
+#include "utils.h"
+
+void setup()
+{
+  Serial.begin(115200);
+  Serial.println("🚀 ESP32 Multi-Sensor WebSocket Client Starting...");
+
+  // Initialize WiFi
+  WiFiManager::connect();
+
+  // Initialize All Sensors (but don't start them)
+  SensorManager::init();
+
+  // Initialize WebSocket
+  if (WebSocketManager::connect())
+  {
+    // Start background tasks (sensor task for periodic updates)
+    TaskManager::startAllTasks();
+
+    Serial.println("✓ System initialized successfully");
+    Serial.println("📡 Waiting for backend commands to start sensors...");
+  }
+  else
+  {
+    Serial.println("❌ Failed to connect to WebSocket server - restarting");
+    Utils::restartSystem("Initial WebSocket Connection Failed");
+  }
+}
+
+void loop()
+{
+  unsigned long now = millis();
+
+  if (WebSocketManager::isConnected())
+  {
+    // Poll WebSocket for messages
+    WebSocketManager::poll();
+
+    // Send periodic status updates
+    WebSocketManager::handlePeriodicUpdates(now);
+  }
+  else
+  {
+    // Handle reconnection logic
+    WebSocketManager::handleReconnection(now);
+  }
+
+  // Check WiFi connection
+  if (!WiFiManager::isConnected())
+  {
+    Serial.println("❌ WiFi disconnected - restarting");
+    Utils::restartSystem("WiFi Disconnected");
+  }
+
+  delay(100);
+}
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: sensor_manager.cpp
+Size: 10093 bytes
+Created: Fri Jul 11 23:53:48 2025
+Last Modified: Fri Jul 11 23:53:58 2025
+File Type: .cpp
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\sensor_manager.cpp
+
+--- FILE CONTENT START ---
+#include "sensor_manager.h"
+#include "config.h"
+#include "websocket_manager.h"
+#include <ArduinoJson.h>
+
+// Include sensor libraries
+#include "MAX30105.h"
+#include "MPU6050.h"
+
+// Static member definitions
+bool SensorManager::audioActive = false;
+int16_t SensorManager::audioBuffer[1024];
+
+bool SensorManager::heartRateActive = false;
+MAX30105 *SensorManager::heartRateSensor = nullptr;
+TwoWire *SensorManager::heartRateWire = nullptr;
+float SensorManager::heartRate = 0.0;
+float SensorManager::spO2 = 0.0;
+unsigned long SensorManager::lastHeartRateRead = 0;
+
+bool SensorManager::gyroscopeActive = false;
+MPU6050 *SensorManager::gyroscopeSensor = nullptr;
+TwoWire *SensorManager::gyroscopeWire = nullptr;
+float SensorManager::accelX = 0.0, SensorManager::accelY = 0.0, SensorManager::accelZ = 0.0;
+float SensorManager::gyroX = 0.0, SensorManager::gyroY = 0.0, SensorManager::gyroZ = 0.0;
+float SensorManager::temperature = 0.0;
+unsigned long SensorManager::lastGyroscopeRead = 0;
+
+bool SensorManager::sensorStatus[SENSOR_COUNT] = {false, false, false};
+
+void SensorManager::init()
+{
+    Serial.println("🔧 Initializing sensor manager...");
+
+    // Initialize all sensors but don't start them
+    initAudio();
+    initHeartRate();
+    initGyroscope();
+
+    Serial.println("✓ Sensor manager initialized");
+}
+
+bool SensorManager::initAudio()
+{
+    Serial.println("🎤 Initializing audio sensor (INMP441)...");
+
+    const i2s_config_t i2s_config = {
+        .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate = AUDIO_SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = BUFFER_COUNT,
+        .dma_buf_len = BUFFER_LEN,
+        .use_apll = false,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0};
+
+    const i2s_pin_config_t pin_config = {
+        .bck_io_num = I2S_SCK,
+        .ws_io_num = I2S_WS,
+        .data_out_num = -1,
+        .data_in_num = I2S_SD};
+
+    esp_err_t result = i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+    if (result != ESP_OK)
+    {
+        Serial.printf("❌ I2S install failed: %d\n", result);
+        return false;
+    }
+
+    result = i2s_set_pin(I2S_PORT, &pin_config);
+    if (result != ESP_OK)
+    {
+        Serial.printf("❌ I2S pin config failed: %d\n", result);
+        return false;
+    }
+
+    result = i2s_set_clk(I2S_PORT, AUDIO_SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+    if (result != ESP_OK)
+    {
+        Serial.printf("❌ I2S clock config failed: %d\n", result);
+        return false;
+    }
+
+    Serial.println("✓ Audio sensor initialized");
+    return true;
+}
+
+bool SensorManager::initHeartRate()
+{
+    Serial.println("❤️  Initializing heart rate sensor (MAX30102)...");
+
+    // Initialize I2C for heart rate sensor
+    heartRateWire = new TwoWire(0);
+    heartRateWire->begin(HR_SDA, HR_SCL, HR_I2C_FREQ);
+
+    // Initialize MAX30102
+    heartRateSensor = new MAX30105();
+    if (!heartRateSensor->begin(*heartRateWire))
+    {
+        Serial.println("❌ MAX30102 not found");
+        return false;
+    }
+
+    // Configure sensor
+    heartRateSensor->setup();
+    heartRateSensor->setPulseAmplitudeRed(0x0A);
+    heartRateSensor->setPulseAmplitudeGreen(0);
+
+    Serial.println("✓ Heart rate sensor initialized");
+    return true;
+}
+
+bool SensorManager::initGyroscope()
+{
+    Serial.println("🔄 Initializing gyroscope sensor (GY-87)...");
+
+    // Initialize I2C for gyroscope sensor
+    gyroscopeWire = new TwoWire(1);
+    gyroscopeWire->begin(GYRO_SDA, GYRO_SCL, GYRO_I2C_FREQ);
+
+    // Initialize MPU6050
+    gyroscopeSensor = new MPU6050();
+    gyroscopeSensor->initialize();
+
+    if (!gyroscopeSensor->testConnection())
+    {
+        Serial.println("❌ MPU6050 connection failed");
+        return false;
+    }
+
+    Serial.println("✓ Gyroscope sensor initialized");
+    return true;
+}
+
+void SensorManager::startSensor(SensorType sensor)
+{
+    switch (sensor)
+    {
+    case SENSOR_AUDIO:
+        if (!audioActive)
+        {
+            esp_err_t result = i2s_start(I2S_PORT);
+            if (result == ESP_OK)
+            {
+                audioActive = true;
+                sensorStatus[SENSOR_AUDIO] = true;
+                Serial.println("🎤 Audio streaming started");
+                WebSocketManager::sendStatusUpdate();
+            }
+            else
+            {
+                Serial.printf("❌ Failed to start audio: %d\n", result);
+            }
+        }
+        break;
+
+    case SENSOR_HEART_RATE:
+        if (!heartRateActive && heartRateSensor != nullptr)
+        {
+            heartRateActive = true;
+            sensorStatus[SENSOR_HEART_RATE] = true;
+            lastHeartRateRead = millis();
+            Serial.println("❤️  Heart rate monitoring started");
+            WebSocketManager::sendStatusUpdate();
+        }
+        break;
+
+    case SENSOR_GYROSCOPE:
+        if (!gyroscopeActive && gyroscopeSensor != nullptr)
+        {
+            gyroscopeActive = true;
+            sensorStatus[SENSOR_GYROSCOPE] = true;
+            lastGyroscopeRead = millis();
+            Serial.println("🔄 Gyroscope monitoring started");
+            WebSocketManager::sendStatusUpdate();
+        }
+        break;
+    }
+}
+
+void SensorManager::stopSensor(SensorType sensor)
+{
+    switch (sensor)
+    {
+    case SENSOR_AUDIO:
+        if (audioActive)
+        {
+            i2s_stop(I2S_PORT);
+            audioActive = false;
+            sensorStatus[SENSOR_AUDIO] = false;
+            Serial.println("🎤 Audio streaming stopped");
+            WebSocketManager::sendStatusUpdate();
+        }
+        break;
+
+    case SENSOR_HEART_RATE:
+        if (heartRateActive)
+        {
+            heartRateActive = false;
+            sensorStatus[SENSOR_HEART_RATE] = false;
+            Serial.println("❤️  Heart rate monitoring stopped");
+            WebSocketManager::sendStatusUpdate();
+        }
+        break;
+
+    case SENSOR_GYROSCOPE:
+        if (gyroscopeActive)
+        {
+            gyroscopeActive = false;
+            sensorStatus[SENSOR_GYROSCOPE] = false;
+            Serial.println("🔄 Gyroscope monitoring stopped");
+            WebSocketManager::sendStatusUpdate();
+        }
+        break;
+    }
+}
+
+bool SensorManager::isSensorActive(SensorType sensor)
+{
+    if (sensor >= 0 && sensor < SENSOR_COUNT)
+    {
+        return sensorStatus[sensor];
+    }
+    return false;
+}
+
+void SensorManager::stopAllSensors()
+{
+    for (int i = 0; i < SENSOR_COUNT; i++)
+    {
+        stopSensor(static_cast<SensorType>(i));
+    }
+}
+
+// Audio methods
+bool SensorManager::isAudioActive() { return audioActive; }
+int16_t *SensorManager::getAudioBuffer() { return audioBuffer; }
+size_t SensorManager::getAudioBufferSize() { return sizeof(audioBuffer); }
+
+bool SensorManager::readAudioData(size_t *bytesRead)
+{
+    if (!audioActive)
+        return false;
+
+    esp_err_t result = i2s_read(I2S_PORT, audioBuffer, sizeof(audioBuffer), bytesRead, 100);
+    return (result == ESP_OK && *bytesRead > 0);
+}
+
+// Heart Rate methods
+bool SensorManager::isHeartRateActive() { return heartRateActive; }
+
+bool SensorManager::readHeartRateData()
+{
+    if (!heartRateActive || heartRateSensor == nullptr)
+        return false;
+
+    unsigned long now = millis();
+    if (now - lastHeartRateRead < HEART_RATE_INTERVAL)
+        return false;
+
+    lastHeartRateRead = now;
+
+    if (heartRateSensor->available())
+    {
+        uint32_t irValue = heartRateSensor->getIR();
+
+        if (irValue > 50000)
+        {
+            // Simple heart rate calculation (simplified)
+            // In a real implementation, you'd use a proper algorithm
+            heartRate = 75.0 + (irValue % 1000) / 40.0; // Simulated for demo
+            spO2 = 95.0 + (irValue % 500) / 100.0;      // Simulated for demo
+            return true;
+        }
+    }
+
+    return false;
+}
+
+float SensorManager::getHeartRate() { return heartRate; }
+float SensorManager::getSpO2() { return spO2; }
+
+// Gyroscope methods
+bool SensorManager::isGyroscopeActive() { return gyroscopeActive; }
+
+bool SensorManager::readGyroscopeData()
+{
+    if (!gyroscopeActive || gyroscopeSensor == nullptr)
+        return false;
+
+    unsigned long now = millis();
+    if (now - lastGyroscopeRead < GYROSCOPE_INTERVAL)
+        return false;
+
+    lastGyroscopeRead = now;
+
+    int16_t ax, ay, az, gx, gy, gz;
+    gyroscopeSensor->getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+    // Convert to proper units
+    accelX = ax / 16384.0; // ±2g
+    accelY = ay / 16384.0;
+    accelZ = az / 16384.0;
+
+    gyroX = gx / 131.0; // ±250°/s
+    gyroY = gy / 131.0;
+    gyroZ = gz / 131.0;
+
+    temperature = gyroscopeSensor->getTemperature() / 340.0 + 36.53;
+
+    return true;
+}
+
+void SensorManager::getAcceleration(float *x, float *y, float *z)
+{
+    *x = accelX;
+    *y = accelY;
+    *z = accelZ;
+}
+
+void SensorManager::getRotation(float *x, float *y, float *z)
+{
+    *x = gyroX;
+    *y = gyroY;
+    *z = gyroZ;
+}
+
+float SensorManager::getTemperature() { return temperature; }
+
+void SensorManager::printSensorStatus()
+{
+    Serial.println("=== Sensor Status ===");
+    Serial.printf("Audio: %s\n", audioActive ? "ACTIVE" : "INACTIVE");
+    Serial.printf("Heart Rate: %s\n", heartRateActive ? "ACTIVE" : "INACTIVE");
+    Serial.printf("Gyroscope: %s\n", gyroscopeActive ? "ACTIVE" : "INACTIVE");
+    Serial.println("====================");
+}
+
+String SensorManager::getSensorStatusJson()
+{
+    JsonDocument doc;
+    doc["audio"] = audioActive;
+    doc["heartRate"] = heartRateActive;
+    doc["gyroscope"] = gyroscopeActive;
+
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: sensor_manager.h
+Size: 2203 bytes
+Created: Fri Jul 11 23:52:21 2025
+Last Modified: Sat Jul 12 00:11:04 2025
+File Type: .h
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\sensor_manager.h
+
+--- FILE CONTENT START ---
+#ifndef SENSOR_MANAGER_H
+#define SENSOR_MANAGER_H
+
+#include <Arduino.h>
+#include <driver/i2s.h>
+#include <Wire.h>
+// Forward declarations for sensor libraries
+class MAX30105;
+class MPU6050;
+
+enum SensorType
+{
+    SENSOR_AUDIO = 0,
+    SENSOR_HEART_RATE = 1,
+    SENSOR_GYROSCOPE = 2,
+    SENSOR_COUNT = 3
+};
+
+class SensorManager
+{
+private:
+    // Audio (INMP441)
+    static bool audioActive;
+    static int16_t audioBuffer[1024];
+
+    // Heart Rate (MAX30102)
+    static bool heartRateActive;
+    static MAX30105 *heartRateSensor;
+    static TwoWire *heartRateWire;
+    static float heartRate;
+    static float spO2;
+    static unsigned long lastHeartRateRead;
+
+    // Gyroscope (GY-87 - MPU6050)
+    static bool gyroscopeActive;
+    static MPU6050 *gyroscopeSensor;
+    static TwoWire *gyroscopeWire;
+    static float accelX, accelY, accelZ;
+    static float gyroX, gyroY, gyroZ;
+    static float temperature;
+    static unsigned long lastGyroscopeRead;
+
+    // Sensor status array
+    static bool sensorStatus[SENSOR_COUNT];
+
+    // Private initialization methods
+    static bool initAudio();
+    static bool initHeartRate();
+    static bool initGyroscope();
+
+public:
+    // General sensor management
+    static void init();
+    static void startSensor(SensorType sensor);
+    static void stopSensor(SensorType sensor);
+    static bool isSensorActive(SensorType sensor);
+    static void stopAllSensors();
+
+    // Audio methods
+    static bool isAudioActive();
+    static int16_t *getAudioBuffer();
+    static size_t getAudioBufferSize();
+    static bool readAudioData(size_t *bytesRead);
+
+    // Heart Rate methods
+    static bool isHeartRateActive();
+    static bool readHeartRateData();
+    static float getHeartRate();
+    static float getSpO2();
+
+    // Gyroscope methods
+    static bool isGyroscopeActive();
+    static bool readGyroscopeData();
+    static void getAcceleration(float *x, float *y, float *z);
+    static void getRotation(float *x, float *y, float *z);
+    static float getTemperature();
+
+    // Utility methods
+    static void printSensorStatus();
+    static String getSensorStatusJson();
+};
+
+#endif
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: task_manager.cpp
+Size: 7397 bytes
+Created: Fri Jul 11 22:39:06 2025
+Last Modified: Fri Jul 11 23:54:19 2025
+File Type: .cpp
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\task_manager.cpp
+
+--- FILE CONTENT START ---
+#include "task_manager.h"
+#include "config.h"
+#include "websocket_manager.h"
+#include "sensor_manager.h"
+#include "utils.h"
+#include <ArduinoJson.h>
+
+// Static member definitions
+TaskHandle_t TaskManager::audioTaskHandle = nullptr;
+TaskHandle_t TaskManager::heartRateTaskHandle = nullptr;
+TaskHandle_t TaskManager::gyroscopeTaskHandle = nullptr;
+TaskHandle_t TaskManager::sensorTaskHandle = nullptr;
+unsigned long TaskManager::lastSensorRead = 0;
+
+void TaskManager::audioTask(void *parameter)
+{
+    Serial.println("🎤 Starting audio task...");
+    
+    size_t bytesRead = 0;
+    int consecutiveErrors = 0;
+    const int maxConsecutiveErrors = 50;
+
+    while (true)
+    {
+        if (WebSocketManager::isConnected() && SensorManager::isAudioActive() && WebSocketManager::isEstablished())
+        {
+            if (SensorManager::readAudioData(&bytesRead))
+            {
+                WebSocketManager::sendBinary((const char *)SensorManager::getAudioBuffer(), bytesRead);
+                consecutiveErrors = 0;
+            }
+            else
+            {
+                consecutiveErrors++;
+                if (consecutiveErrors % 20 == 0)
+                {
+                    Serial.printf("⚠️ Audio read error, consecutive errors: %d\n", consecutiveErrors);
+                }
+
+                if (consecutiveErrors > maxConsecutiveErrors)
+                {
+                    Serial.println("❌ Too many audio errors - restarting");
+                    Utils::restartSystem("Audio Read Errors");
+                }
+            }
+        }
+        else
+        {
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+        }
+    }
+}
+
+void TaskManager::heartRateTask(void *parameter)
+{
+    Serial.println("❤️  Starting heart rate task...");
+    
+    while (true)
+    {
+        if (WebSocketManager::isConnected() && SensorManager::isHeartRateActive() && WebSocketManager::isEstablished())
+        {
+            if (SensorManager::readHeartRateData())
+            {
+                JsonDocument doc;
+                doc["type"] = "sensor-data";
+                doc["sensorType"] = "heartRate";
+                doc["timestamp"] = millis();
+                
+                JsonObject data = doc["data"].to<JsonObject>();
+                data["heartRate"] = SensorManager::getHeartRate();
+                data["spO2"] = SensorManager::getSpO2();
+                
+                String message;
+                serializeJson(doc, message);
+                WebSocketManager::sendText(message);
+            }
+            
+            vTaskDelay(HEART_RATE_INTERVAL / portTICK_PERIOD_MS);
+        }
+        else
+        {
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+    }
+}
+
+void TaskManager::gyroscopeTask(void *parameter)
+{
+    Serial.println("🔄 Starting gyroscope task...");
+    
+    while (true)
+    {
+        if (WebSocketManager::isConnected() && SensorManager::isGyroscopeActive() && WebSocketManager::isEstablished())
+        {
+            if (SensorManager::readGyroscopeData())
+            {
+                JsonDocument doc;
+                doc["type"] = "sensor-data";
+                doc["sensorType"] = "gyroscope";
+                doc["timestamp"] = millis();
+                
+                JsonObject data = doc["data"].to<JsonObject>();
+                
+                float ax, ay, az, gx, gy, gz;
+                SensorManager::getAcceleration(&ax, &ay, &az);
+                SensorManager::getRotation(&gx, &gy, &gz);
+                
+                JsonObject accel = data["acceleration"].to<JsonObject>();
+                accel["x"] = ax;
+                accel["y"] = ay;
+                accel["z"] = az;
+                
+                JsonObject gyro = data["gyroscope"].to<JsonObject>();
+                gyro["x"] = gx;
+                gyro["y"] = gy;
+                gyro["z"] = gz;
+                
+                data["temperature"] = SensorManager::getTemperature();
+                
+                String message;
+                serializeJson(doc, message);
+                WebSocketManager::sendText(message);
+            }
+            
+            vTaskDelay(GYROSCOPE_INTERVAL / portTICK_PERIOD_MS);
+        }
+        else
+        {
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+    }
+}
+
+void TaskManager::sensorTask(void *parameter)
+{
+    Serial.println("📊 Starting sensor task...");
+
+    while (true)
+    {
+        unsigned long now = millis();
+
+        if (now - lastSensorRead >= SENSOR_READ_INTERVAL && WebSocketManager::isEstablished())
+        {
+            lastSensorRead = now;
+            WebSocketManager::sendSensorData();
+        }
+
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+
+void TaskManager::startAllTasks()
+{
+    // Start sensor task on core 0
+    xTaskCreatePinnedToCore(
+        sensorTask,
+        "sensorTask",
+        8000,
+        NULL,
+        1,
+        &sensorTaskHandle,
+        0);
+}
+
+void TaskManager::stopAllTasks()
+{
+    if (audioTaskHandle != nullptr)
+    {
+        vTaskDelete(audioTaskHandle);
+        audioTaskHandle = nullptr;
+    }
+
+    if (heartRateTaskHandle != nullptr)
+    {
+        vTaskDelete(heartRateTaskHandle);
+        heartRateTaskHandle = nullptr;
+    }
+
+    if (gyroscopeTaskHandle != nullptr)
+    {
+        vTaskDelete(gyroscopeTaskHandle);
+        gyroscopeTaskHandle = nullptr;
+    }
+
+    if (sensorTaskHandle != nullptr)
+    {
+        vTaskDelete(sensorTaskHandle);
+        sensorTaskHandle = nullptr;
+    }
+}
+
+void TaskManager::startAudioTask()
+{
+    if (audioTaskHandle == nullptr)
+    {
+        xTaskCreatePinnedToCore(
+            audioTask,
+            "audioTask",
+            10000,
+            NULL,
+            2,
+            &audioTaskHandle,
+            1);
+        Serial.println("✓ Audio task started");
+    }
+}
+
+void TaskManager::stopAudioTask()
+{
+    if (audioTaskHandle != nullptr)
+    {
+        vTaskDelete(audioTaskHandle);
+        audioTaskHandle = nullptr;
+        Serial.println("✓ Audio task stopped");
+    }
+}
+
+void TaskManager::startHeartRateTask()
+{
+    if (heartRateTaskHandle == nullptr)
+    {
+        xTaskCreatePinnedToCore(
+            heartRateTask,
+            "heartRateTask",
+            8000,
+            NULL,
+            2,
+            &heartRateTaskHandle,
+            1);
+        Serial.println("✓ Heart rate task started");
+    }
+}
+
+void TaskManager::stopHeartRateTask()
+{
+    if (heartRateTaskHandle != nullptr)
+    {
+        vTaskDelete(heartRateTaskHandle);
+        heartRateTaskHandle = nullptr;
+        Serial.println("✓ Heart rate task stopped");
+    }
+}
+
+void TaskManager::startGyroscopeTask()
+{
+    if (gyroscopeTaskHandle == nullptr)
+    {
+        xTaskCreatePinnedToCore(
+            gyroscopeTask,
+            "gyroscopeTask",
+            8000,
+            NULL,
+            2,
+            &gyroscopeTaskHandle,
+            1);
+        Serial.println("✓ Gyroscope task started");
+    }
+}
+
+void TaskManager::stopGyroscopeTask()
+{
+    if (gyroscopeTaskHandle != nullptr)
+    {
+        vTaskDelete(gyroscopeTaskHandle);
+        gyroscopeTaskHandle = nullptr;
+        Serial.println("✓ Gyroscope task stopped");
+    }
+}
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: task_manager.h
+Size: 829 bytes
+Created: Fri Jul 11 22:38:55 2025
+Last Modified: Fri Jul 11 23:54:08 2025
+File Type: .h
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\task_manager.h
+
+--- FILE CONTENT START ---
+#ifndef TASK_MANAGER_H
+#define TASK_MANAGER_H
+
+#include <Arduino.h>
+
+class TaskManager
+{
+private:
+    static TaskHandle_t audioTaskHandle;
+    static TaskHandle_t heartRateTaskHandle;
+    static TaskHandle_t gyroscopeTaskHandle;
+    static TaskHandle_t sensorTaskHandle;
+    static unsigned long lastSensorRead;
+
+    static void audioTask(void *parameter);
+    static void heartRateTask(void *parameter);
+    static void gyroscopeTask(void *parameter);
+    static void sensorTask(void *parameter);
+
+public:
+    static void startAllTasks();
+    static void stopAllTasks();
+    static void startAudioTask();
+    static void stopAudioTask();
+    static void startHeartRateTask();
+    static void stopHeartRateTask();
+    static void startGyroscopeTask();
+    static void stopGyroscopeTask();
+};
+
+#endif
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: utils.cpp
+Size: 1225 bytes
+Created: Fri Jul 11 22:39:27 2025
+Last Modified: Fri Jul 11 22:42:05 2025
+File Type: .cpp
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\utils.cpp
+
+--- FILE CONTENT START ---
+#include "utils.h"
+#include "websocket_manager.h"
+#include <ArduinoJson.h>
+
+void Utils::restartSystem(const char *reason)
+{
+    Serial.printf("🔄 RESTARTING SYSTEM: %s\n", reason);
+
+    if (WebSocketManager::isConnected())
+    {
+        JsonDocument doc;
+        doc["type"] = "system-restart";
+        doc["reason"] = reason;
+        doc["timestamp"] = millis();
+
+        String message;
+        serializeJson(doc, message);
+
+        // Try to send restart notification
+        // Note: We can't access client directly, so we'd need to add a method to WebSocketManager
+        delay(1000);
+    }
+
+    ESP.restart();
+}
+
+void Utils::printSystemInfo()
+{
+    Serial.println("=== System Information ===");
+    Serial.printf("Free Heap: %d bytes\n", ESP.getFreeHeap());
+    Serial.printf("Uptime: %lu ms\n", millis());
+    Serial.printf("Chip Model: %s\n", ESP.getChipModel());
+    Serial.printf("Chip Revision: %d\n", ESP.getChipRevision());
+    Serial.printf("Flash Size: %d bytes\n", ESP.getFlashChipSize());
+    Serial.println("========================");
+}
+
+unsigned long Utils::getUptime()
+{
+    return millis();
+}
+
+size_t Utils::getFreeHeap()
+{
+    return ESP.getFreeHeap();
+}
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: utils.h
+Size: 258 bytes
+Created: Fri Jul 11 22:39:15 2025
+Last Modified: Fri Jul 11 22:42:16 2025
+File Type: .h
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\utils.h
+
+--- FILE CONTENT START ---
+#ifndef UTILS_H
+#define UTILS_H
+
+#include <Arduino.h>
+
+class Utils
+{
+public:
+    static void restartSystem(const char *reason);
+    static void printSystemInfo();
+    static unsigned long getUptime();
+    static size_t getFreeHeap();
+};
+
+#endif
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: websocket_manager.cpp
+Size: 9311 bytes
+Created: Fri Jul 11 22:41:28 2025
+Last Modified: Sat Jul 12 00:02:12 2025
+File Type: .cpp
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\websocket_manager.cpp
+
+--- FILE CONTENT START ---
+#include "websocket_manager.h"
+#include "config.h"
+#include "wifi_manager.h"
+#include "sensor_manager.h"
+#include "task_manager.h"
+#include "utils.h"
+
+// Static member definitions
+WebsocketsClient WebSocketManager::client;
+bool WebSocketManager::isWebSocketConnected = false;
+bool WebSocketManager::connectionEstablished = false;
+bool WebSocketManager::deviceInfoSent = false;
+unsigned long WebSocketManager::lastStatusSend = 0;
+unsigned long WebSocketManager::lastPingReceived = 0;
+unsigned long WebSocketManager::lastPingSent = 0;
+unsigned long WebSocketManager::lastReconnectAttempt = 0;
+int WebSocketManager::reconnectAttempts = 0;
+
+void WebSocketManager::onEventsCallback(WebsocketsEvent event, String data)
+{
+  switch (event)
+  {
+  case WebsocketsEvent::ConnectionOpened:
+    Serial.println("✓ WebSocket Connection Opened");
+    isWebSocketConnected = true;
+    connectionEstablished = false;
+    deviceInfoSent = false;
+    reconnectAttempts = 0;
+    lastPingReceived = millis();
+    lastPingSent = millis();
+
+    delay(500);
+    sendDeviceInfo();
+    break;
+
+  case WebsocketsEvent::ConnectionClosed:
+    Serial.println("✗ WebSocket Connection Closed");
+    isWebSocketConnected = false;
+    connectionEstablished = false;
+    deviceInfoSent = false;
+    // Stop all sensors when connection is lost
+    SensorManager::stopAllSensors();
+    TaskManager::stopAllTasks();
+    break;
+
+  case WebsocketsEvent::GotPing:
+    Serial.println("📡 Got Ping from server - auto pong sent");
+    lastPingReceived = millis();
+    break;
+
+  case WebsocketsEvent::GotPong:
+    Serial.println("📡 Got Pong from server");
+    lastPingReceived = millis();
+    break;
+  }
+}
+
+void WebSocketManager::onMessageCallback(WebsocketsMessage message)
+{
+  Serial.print("📨 Got Message: ");
+  Serial.println(message.data());
+
+  lastPingReceived = millis();
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, message.data());
+
+  if (error)
+  {
+    Serial.println("❌ JSON parsing failed");
+    return;
+  }
+
+  String messageType = doc["type"];
+
+  if (messageType == "connection-established")
+  {
+    Serial.println("✓ ESP32 connection confirmed by backend");
+    connectionEstablished = true;
+  }
+  else if (messageType == "command")
+  {
+    String command = doc["command"];
+    
+    if (command == "start-audio-stream")
+    {
+      SensorManager::startSensor(SENSOR_AUDIO);
+      TaskManager::startAudioTask();
+    }
+    else if (command == "stop-audio-stream")
+    {
+      SensorManager::stopSensor(SENSOR_AUDIO);
+      TaskManager::stopAudioTask();
+    }
+    else if (command == "start-heart-rate")
+    {
+      SensorManager::startSensor(SENSOR_HEART_RATE);
+      TaskManager::startHeartRateTask();
+    }
+    else if (command == "stop-heart-rate")
+    {
+      SensorManager::stopSensor(SENSOR_HEART_RATE);
+      TaskManager::stopHeartRateTask();
+    }
+    else if (command == "start-gyroscope")
+    {
+      SensorManager::startSensor(SENSOR_GYROSCOPE);
+      TaskManager::startGyroscopeTask();
+    }
+    else if (command == "stop-gyroscope")
+    {
+      SensorManager::stopSensor(SENSOR_GYROSCOPE);
+      TaskManager::stopGyroscopeTask();
+    }
+    else if (command == "get-sensor-data")
+    {
+      sendSensorData();
+    }
+    else if (command == "get-sensor-status")
+    {
+      sendSensorStatus();
+    }
+    else if (command == "stop-all-sensors")
+    {
+      SensorManager::stopAllSensors();
+      TaskManager::stopAudioTask();
+      TaskManager::stopHeartRateTask();
+      TaskManager::stopGyroscopeTask();
+    }
+  }
+  else if (messageType == "ping")
+  {
+    JsonDocument response;
+    response["type"] = "pong";
+    response["timestamp"] = millis();
+
+    String pongMessage;
+    serializeJson(response, pongMessage);
+    client.send(pongMessage);
+    Serial.println("📡 Sent pong response to server ping");
+  }
+  else if (messageType == "pong")
+  {
+    Serial.println("📡 Received pong from server");
+    lastPingReceived = millis();
+  }
+}
+
+bool WebSocketManager::connect()
+{
+  if (!WiFiManager::isConnected())
+  {
+    return false;
+  }
+
+  Serial.println("🔄 Connecting to WebSocket server...");
+  client.onEvent(onEventsCallback);
+  client.onMessage(onMessageCallback);
+
+  bool connected = client.connect(WEBSOCKET_HOST, WEBSOCKET_PORT, WEBSOCKET_PATH);
+
+  if (connected)
+  {
+    Serial.println("✓ WebSocket Connected!");
+    lastPingReceived = millis();
+    lastPingSent = millis();
+    return true;
+  }
+  else
+  {
+    Serial.println("❌ WebSocket connection failed");
+    return false;
+  }
+}
+
+void WebSocketManager::sendDeviceInfo()
+{
+  if (!isWebSocketConnected || deviceInfoSent)
+    return;
+
+  JsonDocument doc;
+  doc["type"] = "device-info";
+  doc["deviceName"] = DEVICE_NAME;
+  doc["firmwareVersion"] = FIRMWARE_VERSION;
+
+  JsonArray capabilities = doc["capabilities"].to<JsonArray>();
+  capabilities.add("audio");
+  capabilities.add("heartRate");
+  capabilities.add("gyroscope");
+
+  JsonArray sensorTypes = doc["sensorTypes"].to<JsonArray>();
+  sensorTypes.add("audio");
+  sensorTypes.add("heartRate");
+  sensorTypes.add("gyroscope");
+
+  doc["batteryLevel"] = 85;
+  doc["signalStrength"] = WiFiManager::getSignalStrength();
+  doc["timestamp"] = millis();
+
+  String message;
+  serializeJson(doc, message);
+
+  if (client.send(message))
+  {
+    deviceInfoSent = true;
+    Serial.println("✓ Device info sent to backend");
+  }
+  else
+  {
+    Serial.println("❌ Failed to send device info");
+  }
+}
+
+void WebSocketManager::sendSensorData()
+{
+  if (!isWebSocketConnected || !connectionEstablished)
+    return;
+
+  JsonDocument doc;
+  doc["type"] = "sensor-data";
+  doc["sensorType"] = "system";
+  doc["timestamp"] = millis();
+
+  JsonObject data = doc["data"].to<JsonObject>();
+  data["freeHeap"] = ESP.getFreeHeap();
+  data["rssi"] = WiFiManager::getSignalStrength();
+  data["uptime"] = millis();
+  data["audioActive"] = SensorManager::isAudioActive();
+  data["heartRateActive"] = SensorManager::isHeartRateActive();
+  data["gyroscopeActive"] = SensorManager::isGyroscopeActive();
+
+  String message;
+  serializeJson(doc, message);
+
+  if (client.send(message))
+  {
+    Serial.println("📊 Sensor data sent");
+  }
+}
+
+void WebSocketManager::sendSensorStatus()
+{
+  if (!isWebSocketConnected || !connectionEstablished)
+    return;
+
+  JsonDocument doc;
+  doc["type"] = "sensor-status";
+  doc["timestamp"] = millis();
+
+  JsonObject sensors = doc["sensors"].to<JsonObject>();
+  sensors["audio"] = SensorManager::isAudioActive();
+  sensors["heartRate"] = SensorManager::isHeartRateActive();
+  sensors["gyroscope"] = SensorManager::isGyroscopeActive();
+
+  String message;
+  serializeJson(doc, message);
+
+  if (client.send(message))
+  {
+    Serial.println("📊 Sensor status sent");
+  }
+}
+
+void WebSocketManager::sendStatusUpdate()
+{
+  if (!isWebSocketConnected || !connectionEstablished)
+    return;
+
+  JsonDocument doc;
+  doc["type"] = "status-update";
+  doc["status"] = "online";
+  doc["sensors"] = SensorManager::getSensorStatusJson();
+  doc["batteryLevel"] = 85;
+  doc["signalStrength"] = WiFiManager::getSignalStrength();
+  doc["timestamp"] = millis();
+  doc["uptime"] = millis();
+  doc["freeHeap"] = ESP.getFreeHeap();
+
+  String message;
+  serializeJson(doc, message);
+
+  if (client.send(message))
+  {
+    Serial.println("✓ Status update sent");
+  }
+}
+
+void WebSocketManager::sendPing()
+{
+  if (!isWebSocketConnected)
+    return;
+
+  JsonDocument doc;
+  doc["type"] = "ping";
+  doc["timestamp"] = millis();
+
+  String message;
+  serializeJson(doc, message);
+
+  if (client.send(message))
+  {
+    lastPingSent = millis();
+    Serial.println("📡 Sent ping to server");
+  }
+}
+
+bool WebSocketManager::isConnected()
+{
+  return isWebSocketConnected;
+}
+
+bool WebSocketManager::isEstablished()
+{
+  return connectionEstablished;
+}
+
+void WebSocketManager::poll()
+{
+  client.poll();
+}
+
+void WebSocketManager::handlePeriodicUpdates(unsigned long now)
+{
+  if (now - lastStatusSend >= STATUS_SEND_INTERVAL && connectionEstablished)
+  {
+    lastStatusSend = now;
+    sendStatusUpdate();
+  }
+}
+
+void WebSocketManager::handleReconnection(unsigned long now)
+{
+  if (now - lastReconnectAttempt > RECONNECT_INTERVAL && reconnectAttempts < MAX_RECONNECT_ATTEMPTS)
+  {
+    lastReconnectAttempt = now;
+    reconnectAttempts++;
+
+    Serial.printf("🔄 Attempting to reconnect... (%d/%d)\n", reconnectAttempts, MAX_RECONNECT_ATTEMPTS);
+
+    if (connect())
+    {
+      Serial.println("✓ Reconnected successfully!");
+    }
+  }
+  else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS)
+  {
+    Serial.println("❌ Max reconnect attempts reached - restarting");
+    Utils::restartSystem("Max Reconnect Attempts Reached");
+  }
+}
+
+void WebSocketManager::sendBinary(const char* data, size_t length)
+{
+  if (isWebSocketConnected && connectionEstablished)
+  {
+    client.sendBinary(data, length);
+  }
+}
+
+void WebSocketManager::sendText(const String& message)
+{
+  if (isWebSocketConnected && connectionEstablished)
+  {
+    client.send(message);
+  }
+}
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: websocket_manager.h
+Size: 1246 bytes
+Created: Fri Jul 11 22:40:36 2025
+Last Modified: Sat Jul 12 00:01:41 2025
+File Type: .h
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\websocket_manager.h
+
+--- FILE CONTENT START ---
+#ifndef WEBSOCKET_MANAGER_H
+#define WEBSOCKET_MANAGER_H
+
+#include <Arduino.h>
+#include <ArduinoWebsockets.h>
+#include <ArduinoJson.h>
+
+using namespace websockets;
+
+class WebSocketManager
+{
+private:
+    static WebsocketsClient client;
+    static bool isWebSocketConnected;
+    static bool connectionEstablished;
+    static bool deviceInfoSent;
+    static unsigned long lastStatusSend;
+    static unsigned long lastPingReceived;
+    static unsigned long lastPingSent;
+    static unsigned long lastReconnectAttempt;
+    static int reconnectAttempts;
+
+    static void onEventsCallback(WebsocketsEvent event, String data);
+    static void onMessageCallback(WebsocketsMessage message);
+    static void sendDeviceInfo();
+    static void sendPing();
+    static void sendSensorStatus();
+
+public:
+    static bool connect();
+    static bool isConnected();
+    static bool isEstablished();
+    static void poll();
+    static void handlePeriodicUpdates(unsigned long now);
+    static void handleReconnection(unsigned long now);
+    static void sendStatusUpdate();
+    static void sendSensorData();
+    static void sendBinary(const char *data, size_t length);
+    static void sendText(const String &message);
+};
+
+#endif
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: wifi_manager.cpp
+Size: 863 bytes
+Created: Fri Jul 11 22:40:17 2025
+Last Modified: Fri Jul 11 23:14:06 2025
+File Type: .cpp
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\wifi_manager.cpp
+
+--- FILE CONTENT START ---
+#include "wifi_manager.h"
+#include "config.h"
+#include "utils.h"
+
+void WiFiManager::connect()
+{
+    Serial.println("🔄 Connecting to WiFi...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20)
+    {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        Serial.println("\n✓ WiFi connected!");
+        Serial.print("📍 IP Address: ");
+        Serial.println(WiFi.localIP());
+    }
+    else
+    {
+        Serial.println("\n❌ WiFi connection failed - restarting");
+        Utils::restartSystem("WiFi Connection Failed");
+    }
+}
+
+bool WiFiManager::isConnected()
+{
+    return WiFi.status() == WL_CONNECTED;
+}
+
+int WiFiManager::getSignalStrength()
+{
+    return WiFi.RSSI();
+}
+--- FILE CONTENT END ---
+
+========================================
+
+=== FILE METADATA ===
+File Name: wifi_manager.h
+Size: 233 bytes
+Created: Fri Jul 11 22:39:50 2025
+Last Modified: Fri Jul 11 22:49:15 2025
+File Type: .h
+Full Path: C:\Users\mukul\OneDrive\Documents\PlatformIO\Projects\esp2ndDevice\src\wifi_manager.h
+
+--- FILE CONTENT START ---
+#ifndef WIFI_MANAGER_H
+#define WIFI_MANAGER_H
+
+#include <Arduino.h>
+#include <WiFi.h>
+
+class WiFiManager
+{
+public:
+    static void connect();
+    static bool isConnected();
+    static int getSignalStrength();
+};
+
+#endif
+--- FILE CONTENT END ---
+
+========================================
+

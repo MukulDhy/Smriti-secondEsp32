@@ -1,7 +1,8 @@
 #include "websocket_manager.h"
 #include "config.h"
 #include "wifi_manager.h"
-#include "audio_manager.h"
+#include "sensor_manager.h"
+#include "task_manager.h"
 #include "utils.h"
 
 // Static member definitions
@@ -37,7 +38,9 @@ void WebSocketManager::onEventsCallback(WebsocketsEvent event, String data)
     isWebSocketConnected = false;
     connectionEstablished = false;
     deviceInfoSent = false;
-    AudioManager::stopStreaming();
+    // Stop all sensors when connection is lost
+    SensorManager::stopAllSensors();
+    TaskManager::stopAllTasks();
     break;
 
   case WebsocketsEvent::GotPing:
@@ -74,22 +77,55 @@ void WebSocketManager::onMessageCallback(WebsocketsMessage message)
   {
     Serial.println("✓ ESP32 connection confirmed by backend");
     connectionEstablished = true;
-    AudioManager::startStreaming();
   }
   else if (messageType == "command")
   {
     String command = doc["command"];
+    
     if (command == "start-audio-stream")
     {
-      AudioManager::startStreaming();
+      SensorManager::startSensor(SENSOR_AUDIO);
+      TaskManager::startAudioTask();
     }
     else if (command == "stop-audio-stream")
     {
-      AudioManager::stopStreaming();
+      SensorManager::stopSensor(SENSOR_AUDIO);
+      TaskManager::stopAudioTask();
+    }
+    else if (command == "start-heart-rate")
+    {
+      SensorManager::startSensor(SENSOR_HEART_RATE);
+      TaskManager::startHeartRateTask();
+    }
+    else if (command == "stop-heart-rate")
+    {
+      SensorManager::stopSensor(SENSOR_HEART_RATE);
+      TaskManager::stopHeartRateTask();
+    }
+    else if (command == "start-gyroscope")
+    {
+      SensorManager::startSensor(SENSOR_GYROSCOPE);
+      TaskManager::startGyroscopeTask();
+    }
+    else if (command == "stop-gyroscope")
+    {
+      SensorManager::stopSensor(SENSOR_GYROSCOPE);
+      TaskManager::stopGyroscopeTask();
     }
     else if (command == "get-sensor-data")
     {
       sendSensorData();
+    }
+    else if (command == "get-sensor-status")
+    {
+      sendSensorStatus();
+    }
+    else if (command == "stop-all-sensors")
+    {
+      SensorManager::stopAllSensors();
+      TaskManager::stopAudioTask();
+      TaskManager::stopHeartRateTask();
+      TaskManager::stopGyroscopeTask();
     }
   }
   else if (messageType == "ping")
@@ -149,9 +185,13 @@ void WebSocketManager::sendDeviceInfo()
 
   JsonArray capabilities = doc["capabilities"].to<JsonArray>();
   capabilities.add("audio");
+  capabilities.add("heartRate");
+  capabilities.add("gyroscope");
 
   JsonArray sensorTypes = doc["sensorTypes"].to<JsonArray>();
   sensorTypes.add("audio");
+  sensorTypes.add("heartRate");
+  sensorTypes.add("gyroscope");
 
   doc["batteryLevel"] = 85;
   doc["signalStrength"] = WiFiManager::getSignalStrength();
@@ -185,7 +225,9 @@ void WebSocketManager::sendSensorData()
   data["freeHeap"] = ESP.getFreeHeap();
   data["rssi"] = WiFiManager::getSignalStrength();
   data["uptime"] = millis();
-  data["audioStreaming"] = AudioManager::isStreaming();
+  data["audioActive"] = SensorManager::isAudioActive();
+  data["heartRateActive"] = SensorManager::isHeartRateActive();
+  data["gyroscopeActive"] = SensorManager::isGyroscopeActive();
 
   String message;
   serializeJson(doc, message);
@@ -193,6 +235,29 @@ void WebSocketManager::sendSensorData()
   if (client.send(message))
   {
     Serial.println("📊 Sensor data sent");
+  }
+}
+
+void WebSocketManager::sendSensorStatus()
+{
+  if (!isWebSocketConnected || !connectionEstablished)
+    return;
+
+  JsonDocument doc;
+  doc["type"] = "sensor-status";
+  doc["timestamp"] = millis();
+
+  JsonObject sensors = doc["sensors"].to<JsonObject>();
+  sensors["audio"] = SensorManager::isAudioActive();
+  sensors["heartRate"] = SensorManager::isHeartRateActive();
+  sensors["gyroscope"] = SensorManager::isGyroscopeActive();
+
+  String message;
+  serializeJson(doc, message);
+
+  if (client.send(message))
+  {
+    Serial.println("📊 Sensor status sent");
   }
 }
 
@@ -204,7 +269,7 @@ void WebSocketManager::sendStatusUpdate()
   JsonDocument doc;
   doc["type"] = "status-update";
   doc["status"] = "online";
-  doc["isStreaming"] = AudioManager::isStreaming();
+  doc["sensors"] = SensorManager::getSensorStatusJson();
   doc["batteryLevel"] = 85;
   doc["signalStrength"] = WiFiManager::getSignalStrength();
   doc["timestamp"] = millis();
@@ -289,5 +354,13 @@ void WebSocketManager::sendBinary(const char* data, size_t length)
   if (isWebSocketConnected && connectionEstablished)
   {
     client.sendBinary(data, length);
+  }
+}
+
+void WebSocketManager::sendText(const String& message)
+{
+  if (isWebSocketConnected && connectionEstablished)
+  {
+    client.send(message);
   }
 }
